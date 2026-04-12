@@ -1,0 +1,10 @@
+supabase==2.3.0
+anthropic==0.25.0
+requests==2.31.0
+python-dotenv==1.0.0
+web3==6.15.1
+gql==3.5.0
+aiohttp==3.9.3
+pandas==2.2.1
+schedule==1.2.1
+colorlog==6.8.2
