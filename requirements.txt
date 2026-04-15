@@ -8,5 +8,5 @@ aiohttp==3.9.3
 pandas>=2.2.0
 schedule==1.2.1
 colorlog==6.8.2
-pandas_ta==0.3.14b0
+pandas_ta==0.4.71b0
 hyperliquid-python-sdk
