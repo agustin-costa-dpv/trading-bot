@@ -1,0 +1,29 @@
+services:
+  - type: worker
+    name: trading-bot
+    runtime: python
+    plan: free
+    region: oregon
+    buildCommand: pip install -r requirements.txt
+    startCommand: python main.py
+    autoDeploy: true
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.12.1
+      # Las siguientes variables se cargan desde el dashboard de Render
+      # (NO se commitean al repo por seguridad):
+      # - SUPABASE_URL
+      # - SUPABASE_ANON_KEY
+      # - SUPABASE_KEY
+      # - ANTHROPIC_API_KEY
+      # - BINANCE_API_KEY
+      # - BINANCE_SECRET_KEY
+      # - WALLET_PRIVATE_KEY
+      # - HYPERLIQUID_MAIN_ADDRESS
+      # - HYPERLIQUID_API_ADDRESS
+      # - HYPERLIQUID_API_PRIVATE_KEY
+      # - HYPERLIQUID_MODE
+      # - MODE
+      # - LOG_LEVEL
+      # - CAPITAL_DEMO
+      # - CAPITAL_REAL
