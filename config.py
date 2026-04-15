@@ -22,7 +22,7 @@ LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO")
 STOP_LOSS_POR_APUESTA = 0.05     # 5% del capital por apuesta
 PERDIDA_DIARIA_MAXIMA = 0.15     # 15% del capital total por día
 TAMANO_MAXIMO_APUESTA = 0.05     # 5% del capital por apuesta
-CAPITAL_INICIAL_DEMO = 1000.0    # USD simulados para modo demo
+CAPITAL_INICIAL_DEMO = 100.0    # USD simulados para modo demo
 
 # Azuro Protocol
 AZURO_GRAPHQL_URL = "https://thegraph-1.onchainfeed.org/subgraphs/name/azuro-protocol/azuro-data-feed-base"
