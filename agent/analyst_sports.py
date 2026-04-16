@@ -5,10 +5,12 @@ Analista deportivo del bot. Evalúa value en mercados 1X2 de fútbol en Azuro.
 Flujo:
 1. Trae mercados de fútbol desde bot/azuro.py
 2. Filtra los 1X2 (condition con outcomes 29=Home, 30=Draw, 31=Away)
-3. Calcula probabilidad implícita desde las odds
-4. Enriquece con datos xG (bot/xg_data.py)
-5. Pasa contexto a Claude (equipos, liga, odds, xG) para que estime probabilidad real
-6. Si la probabilidad real > probabilidad implícita + margen → señal de value
+3. Guarda odds actuales en Supabase (para tracking de movimiento)
+4. Calcula probabilidad implícita desde las odds
+5. Enriquece con datos xG (bot/xg_data.py)
+6. Enriquece con movimiento de odds (bot/odds_movement.py)
+7. Pasa contexto completo a Claude para que estime probabilidad real
+8. Si prob real > prob implícita + margen → señal de value
 
 Devuelve SenalDeportiva lista para main.py → risk.py → ejecución.
 """
@@ -24,6 +26,7 @@ from anthropic import Anthropic
 
 from bot.azuro import listar_mercados
 from bot.xg_data import enriquecer_mercado_con_xg
+from bot.odds_movement import guardar_odds, get_movimiento_odds
 from agent.sessions import get_sesion_actual
 
 
@@ -36,19 +39,16 @@ CLIENTE_CLAUDE = Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
 MODELO_HAIKU = "claude-haiku-4-5-20251001"
 MODELO_SONNET = "claude-sonnet-4-6"
 
-# Outcome IDs del mercado 1X2 en Azuro (Full Time Result en fútbol)
 OUTCOME_ID_HOME = "29"
 OUTCOME_ID_DRAW = "30"
 OUTCOME_ID_AWAY = "31"
 OUTCOME_IDS_1X2 = {OUTCOME_ID_HOME, OUTCOME_ID_DRAW, OUTCOME_ID_AWAY}
 
-# Umbrales de value
-MARGEN_MINIMO_VALUE = 0.05        # probabilidad real debe superar la implícita por 5%
-PROBABILIDAD_MINIMA_FINAL = 0.55  # prob real mínima para considerar la apuesta
-ODDS_MINIMAS = 1.5                # odds muy bajas = poco upside
-ODDS_MAXIMAS = 6.0                # odds muy altas = especulativo
+MARGEN_MINIMO_VALUE = 0.05
+PROBABILIDAD_MINIMA_FINAL = 0.55
+ODDS_MINIMAS = 1.5
+ODDS_MAXIMAS = 6.0
 
-# Ligas con mayor ineficiencia en Azuro (oráculos calibran peor → más edge)
 LIGAS_PRIORITARIAS = {
     "eredivisie", "liga portugal", "championship",
     "superliga argentina", "bundesliga 2", "2. bundesliga",
@@ -67,7 +67,6 @@ class SeleccionDeportiva(str, Enum):
 
 @dataclass
 class Mercado1X2:
-    """Representación limpia de un mercado 1X2."""
     game_id: str
     titulo: str
     liga: str
@@ -94,7 +93,6 @@ class Mercado1X2:
 
 @dataclass
 class SenalDeportiva:
-    """Señal final que sale del analyst_sports y va a risk.py."""
     game_id: str
     titulo: str
     liga: str
@@ -121,7 +119,7 @@ class SenalDeportiva:
 
 
 # ─────────────────────────────────────────────────────────────
-# Filtrado y priorización de mercados
+# Filtrado y priorización
 # ─────────────────────────────────────────────────────────────
 
 def _es_mercado_1x2(mercado: dict) -> bool:
@@ -161,10 +159,7 @@ def _parsear_mercado_1x2(mercado: dict) -> Optional[Mercado1X2]:
 
 
 def obtener_mercados_1x2_futbol() -> list[Mercado1X2]:
-    """
-    Devuelve mercados 1X2 de fútbol activos en Azuro.
-    Las ligas prioritarias van primero.
-    """
+    """Devuelve mercados 1X2 de fútbol, ligas prioritarias primero."""
     crudos = listar_mercados()
     futbol = [
         m for m in crudos
@@ -177,7 +172,6 @@ def obtener_mercados_1x2_futbol() -> list[Mercado1X2]:
         if parsed:
             mercados_1x2.append(parsed)
 
-    # Ligas prioritarias primero (más ineficiencias explotables)
     mercados_1x2.sort(key=lambda m: (0 if m.es_liga_prioritaria else 1))
     return mercados_1x2
 
@@ -202,10 +196,6 @@ def _llamar_claude(modelo: str, prompt: str, max_tokens: int = 500) -> dict:
 
 
 def filtro_haiku_partido(mercado: Mercado1X2) -> dict:
-    """
-    Haiku hace un primer filtrado rápido.
-    Devuelve {conozco_equipos, vale_analisis_profundo, razon}
-    """
     liga_tag = "⭐ LIGA PRIORITARIA (mayor ineficiencia de odds)" if mercado.es_liga_prioritaria else ""
 
     prompt = f"""Sos un analista de fútbol. Evaluá este partido rápidamente.
@@ -232,10 +222,9 @@ Si es liga prioritaria o hay algo interesante en las odds → true.
     return _llamar_claude(MODELO_HAIKU, prompt, max_tokens=300)
 
 
-def analisis_sonnet_partido(mercado: Mercado1X2, xg_data: dict) -> dict:
+def analisis_sonnet_partido(mercado: Mercado1X2, xg_data: dict, odds_mov_resumen: str) -> dict:
     """
-    Sonnet hace el análisis profundo con contexto xG incluido.
-    Devuelve {prob_real_home, prob_real_draw, prob_real_away, seleccion_con_value, confianza, razon}
+    Sonnet hace el análisis profundo con contexto xG + movimiento de odds.
     """
     xg_resumen = xg_data.get("resumen", "Datos xG no disponibles para esta liga.")
     liga_tag = "⭐ LIGA PRIORITARIA — los oráculos de Azuro suelen tener más ineficiencias aquí." if mercado.es_liga_prioritaria else ""
@@ -254,12 +243,15 @@ ODDS OFRECIDAS:
 
 {xg_resumen}
 
+{odds_mov_resumen}
+
 Tu tarea:
 1. Estimá probabilidad REAL de cada resultado basándote en:
    - Los datos xG provistos (priorizalos sobre intuición general)
-   - Si hay flag de REGRESIÓN A LA MEDIA, ponderalo fuerte en tu estimación
+   - Si hay flag de REGRESIÓN A LA MEDIA, ponderalo fuerte
+   - El movimiento de odds: si las odds subieron pero el xG favorece al equipo,
+     es divergencia → señal fuerte de value
    - Forma reciente, posición en tabla, head-to-head, localía
-   - Lesiones o ausencias conocidas
 2. Compará prob real vs prob implícita → identificá VALUE (real > implícita)
 3. Si ninguna opción tiene value claro (>5%), respondé seleccion=NINGUNA
 
@@ -288,10 +280,11 @@ def analizar_partido(mercado: Mercado1X2) -> Optional[SenalDeportiva]:
     Pipeline para un partido:
     1. Filtro odds extremas
     2. Haiku decide si vale el análisis profundo
-    3. Enriquecer con datos xG
-    4. Sonnet estima probabilidades reales (con contexto xG)
-    5. Aplica bonus de regresión a la media si corresponde
-    6. Construye SenalDeportiva si hay value
+    3. Enriquecer con xG
+    4. Enriquecer con movimiento de odds
+    5. Sonnet estima probabilidades (con xG + movimiento)
+    6. Aplica bonus de regresión y divergencia
+    7. Construye SenalDeportiva si hay value
     """
     # 1. Filtro por odds razonables
     odds_validas = [mercado.odds_home, mercado.odds_draw, mercado.odds_away]
@@ -308,16 +301,31 @@ def analizar_partido(mercado: Mercado1X2) -> Optional[SenalDeportiva]:
     if not filtro.get("vale_analisis_profundo", False):
         return None
 
-    # 3. Enriquecer con xG (falla silenciosamente si liga no soportada)
+    # 3. Enriquecer con xG
     try:
         xg_data = enriquecer_mercado_con_xg(mercado.titulo, mercado.liga)
     except Exception as e:
         print(f"⚠️  Error xG en {mercado.titulo}: {e}")
         xg_data = {"disponible": False, "score_bonus": 1.0, "resumen": "Error al obtener xG."}
 
-    # 4. Análisis Sonnet (con contexto xG)
+    # 4. Movimiento de odds
+    odds_mov = None
+    odds_mov_resumen = "Movimiento de odds: sin historial suficiente aún (primeros ciclos)."
     try:
-        analisis = analisis_sonnet_partido(mercado, xg_data)
+        odds_mov = get_movimiento_odds(
+            mercado.game_id,
+            mercado.odds_home,
+            mercado.odds_draw,
+            mercado.odds_away,
+        )
+        if odds_mov:
+            odds_mov_resumen = odds_mov.resumen()
+    except Exception as e:
+        print(f"⚠️  Error odds_movement en {mercado.titulo}: {e}")
+
+    # 5. Análisis Sonnet (con xG + movimiento de odds)
+    try:
+        analisis = analisis_sonnet_partido(mercado, xg_data, odds_mov_resumen)
     except (json.JSONDecodeError, KeyError, IndexError) as e:
         print(f"⚠️  Error Sonnet en {mercado.titulo}: {e}")
         return None
@@ -348,13 +356,25 @@ def analizar_partido(mercado: Mercado1X2) -> Optional[SenalDeportiva]:
 
     value = prob_real - prob_implicita
 
-    # 5. Bonus por regresión a la media (xG dice que el equipo va a corregir)
+    # 6a. Bonus por regresión a la media (xG)
     score_bonus = xg_data.get("score_bonus", 1.0)
     if score_bonus > 1.0:
         value = value * score_bonus
-        print(f"  📈 Bonus regresión aplicado ({score_bonus}x): value={value:.3f}")
+        print(f"  📈 Bonus regresión xG ({score_bonus}x): value={value:.3f}")
 
-    # 6. Validaciones finales
+    # 6b. Bonus por divergencia odds (mercado se alejó pero xG favorece)
+    if odds_mov:
+        xg_favorece = xg_data.get("disponible", False) and (
+            (seleccion_str == "HOME" and xg_data.get("home") and
+             xg_data["home"].xg_promedio > xg_data["home"].xga_promedio) or
+            (seleccion_str == "AWAY" and xg_data.get("away") and
+             xg_data["away"].xg_promedio > xg_data["away"].xga_promedio)
+        )
+        if odds_mov.hay_divergencia(seleccion_str, xg_favorece):
+            value = value * 1.2
+            print(f"  📈 Bonus divergencia odds (1.2x): value={value:.3f}")
+
+    # 7. Validaciones finales
     if value < MARGEN_MINIMO_VALUE:
         return None
     if prob_real < PROBABILIDAD_MINIMA_FINAL:
@@ -379,8 +399,8 @@ def analizar_partido(mercado: Mercado1X2) -> Optional[SenalDeportiva]:
 def analizar_todos_los_partidos() -> list[SenalDeportiva]:
     """
     Analiza todos los partidos de fútbol 1X2 activos.
-    Las ligas prioritarias se analizan primero.
-    Devuelve solo los que generaron señal con value.
+    Guarda odds al inicio del ciclo para tracking de movimiento.
+    Ligas prioritarias se analizan primero.
     """
     sesion = get_sesion_actual()
     if not sesion.puede_operar:
@@ -391,12 +411,18 @@ def analizar_todos_los_partidos() -> list[SenalDeportiva]:
     prioritarios = sum(1 for m in mercados if m.es_liga_prioritaria)
     print(f"🔎 Analizando {len(mercados)} partidos 1X2 ({prioritarios} en ligas prioritarias primero)...")
 
+    # Guardar odds al inicio del ciclo (para movimiento futuro)
+    try:
+        guardar_odds(mercados)
+    except Exception as e:
+        print(f"⚠️  Error guardando odds históricas: {e}")
+
     senales = []
     for m in mercados:
         senal = analizar_partido(m)
         if senal:
             senales.append(senal)
-            print(f"  ✅ Value detectado: {senal.titulo} → {senal.seleccion.value} @ {senal.odds:.2f} (value={senal.value:.1%})")
+            print(f"  ✅ Value: {senal.titulo} → {senal.seleccion.value} @ {senal.odds:.2f} (value={senal.value:.1%})")
 
     return senales
 
@@ -410,35 +436,22 @@ if __name__ == "__main__":
     load_dotenv()
 
     print("=" * 60)
-    print("TEST: Analyst deportivo (Azuro 1X2 fútbol + xG)")
+    print("TEST: Analyst deportivo (Azuro 1X2 + xG + odds movement)")
     print("=" * 60)
 
     mercados = obtener_mercados_1x2_futbol()
-    print(f"\n📊 Mercados 1X2 encontrados: {len(mercados)}")
-    prioritarios = [m for m in mercados if m.es_liga_prioritaria]
-    print(f"⭐ Ligas prioritarias: {len(prioritarios)}")
+    print(f"\n📊 Mercados 1X2: {len(mercados)}")
+    print(f"⭐ Ligas prioritarias: {sum(1 for m in mercados if m.es_liga_prioritaria)}")
 
     if mercados:
-        print(f"\n🔎 Primeros 3 mercados:")
-        for m in mercados[:3]:
-            tag = "⭐" if m.es_liga_prioritaria else "  "
-            print(f"  {tag} {m.titulo} ({m.liga})")
-            print(f"     H: {m.odds_home:.2f} | D: {m.odds_draw:.2f} | A: {m.odds_away:.2f}")
-
-    if mercados:
-        print(f"\n🤖 Analizando primer partido con xG + Claude...")
+        print(f"\n🤖 Analizando primer partido...")
         senal = analizar_partido(mercados[0])
         if senal:
-            print(f"\n✅ SEÑAL DEPORTIVA:")
-            print(f"   Partido:    {senal.titulo}")
-            print(f"   Selección:  {senal.seleccion.value}")
-            print(f"   Odds:       {senal.odds:.2f}")
-            print(f"   Prob impl:  {senal.probabilidad_implicita:.1%}")
-            print(f"   Prob real:  {senal.probabilidad_real:.1%}")
-            print(f"   Value:      {senal.value:+.1%}")
-            print(f"   Confianza:  {senal.confianza}")
-            print(f"   Razón:      {senal.razon}")
+            print(f"\n✅ SEÑAL:")
+            print(f"   {senal.titulo} → {senal.seleccion.value} @ {senal.odds:.2f}")
+            print(f"   Value: {senal.value:+.1%} | Confianza: {senal.confianza}")
+            print(f"   {senal.razon}")
         else:
-            print("   ❌ Sin value detectado")
+            print("   ❌ Sin value")
 
     print("\n✅ Test terminado")
