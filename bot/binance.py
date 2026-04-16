@@ -1,15 +1,7 @@
 """
-bot/binance.py
-Cliente para Binance API pública (sin auth, solo lectura).
-Provee precios, velas (klines), volumen y order book para BTC/ETH/SOL.
-
-Endpoints usados (todos públicos, sin API key):
-- /api/v3/ticker/price        → precio actual
-- /api/v3/ticker/24hr         → stats 24h (volumen, cambio %)
-- /api/v3/klines              → velas históricas (para RSI, EMA, Bollinger)
-- /api/v3/depth               → order book (para Nivel 3)
-
-Rate limit: 1200 requests/min por IP. Estamos MUY por debajo.
+bot/binance.py — v3
+Spot desde Binance (mirror). Derivados desde OKX (Binance Futures bloquea
+desde muchas IPs incluyendo Render/Codespaces).
 """
 
 import requests
@@ -19,25 +11,27 @@ from typing import Literal
 
 
 BINANCE_BASE = "https://data-api.binance.vision"
+OKX_BASE = "https://www.okx.com"
 
-# Símbolos que vamos a operar (par contra USDT)
 SIMBOLOS = {
     "BTC": "BTCUSDT",
     "ETH": "ETHUSDT",
     "SOL": "SOLUSDT",
 }
 
-# Intervalos de velas soportados por Binance
+OKX_SWAP = {
+    "BTC": "BTC-USDT-SWAP",
+    "ETH": "ETH-USDT-SWAP",
+    "SOL": "SOL-USDT-SWAP",
+}
+
+OKX_CCY = {"BTC": "BTC", "ETH": "ETH", "SOL": "SOL"}
+
 Intervalo = Literal["1m", "3m", "5m", "15m", "30m", "1h", "4h", "1d"]
 
 
-# ─────────────────────────────────────────────────────────────
-# Modelos de datos
-# ─────────────────────────────────────────────────────────────
-
 @dataclass
 class Vela:
-    """Una vela (kline) de Binance."""
     timestamp: datetime
     open: float
     high: float
@@ -48,31 +42,26 @@ class Vela:
     def to_dict(self) -> dict:
         return {
             "timestamp": self.timestamp.isoformat(),
-            "open": self.open,
-            "high": self.high,
-            "low": self.low,
-            "close": self.close,
-            "volume": self.volume,
+            "open": self.open, "high": self.high, "low": self.low,
+            "close": self.close, "volume": self.volume,
         }
 
 
 @dataclass
 class Stats24h:
-    """Estadísticas de las últimas 24 horas."""
     simbolo: str
     precio_actual: float
-    cambio_pct_24h: float        # % de cambio en 24h
-    volumen_24h: float            # en moneda base (ej: BTC)
-    volumen_quote_24h: float      # en USDT
+    cambio_pct_24h: float
+    volumen_24h: float
+    volumen_quote_24h: float
     high_24h: float
     low_24h: float
 
 
 @dataclass
 class OrderBook:
-    """Snapshot del order book."""
     simbolo: str
-    bids: list[tuple[float, float]] = field(default_factory=list)  # [(precio, cantidad)]
+    bids: list[tuple[float, float]] = field(default_factory=list)
     asks: list[tuple[float, float]] = field(default_factory=list)
 
     @property
@@ -94,66 +83,46 @@ class OrderBook:
         return (self.spread / self.mejor_bid) * 100
 
 
-# ─────────────────────────────────────────────────────────────
-# Helpers
-# ─────────────────────────────────────────────────────────────
-
 def _resolver_simbolo(activo: str) -> str:
-    """Convierte 'BTC' → 'BTCUSDT'. Acepta también el símbolo completo."""
     activo = activo.upper()
     if activo in SIMBOLOS:
         return SIMBOLOS[activo]
     if activo.endswith("USDT"):
         return activo
-    raise ValueError(f"Activo no soportado: {activo}. Usá BTC, ETH o SOL.")
+    raise ValueError(f"Activo no soportado: {activo}")
 
 
-def _request(endpoint: str, params: dict | None = None) -> dict | list:
-    """Wrapper de requests con manejo de errores."""
-    url = f"{BINANCE_BASE}{endpoint}"
+def _request(base: str, endpoint: str, params: dict | None = None) -> dict | list:
+    url = f"{base}{endpoint}"
     try:
         r = requests.get(url, params=params, timeout=10)
         r.raise_for_status()
         return r.json()
     except requests.exceptions.Timeout:
-        raise RuntimeError(f"Timeout consultando Binance: {endpoint}")
+        raise RuntimeError(f"Timeout: {endpoint}")
     except requests.exceptions.HTTPError as e:
-        raise RuntimeError(f"Error HTTP {r.status_code} en Binance: {e}")
+        raise RuntimeError(f"HTTP {r.status_code}: {e}")
     except requests.exceptions.RequestException as e:
-        raise RuntimeError(f"Error de red consultando Binance: {e}")
+        raise RuntimeError(f"Red: {e}")
 
 
 # ─────────────────────────────────────────────────────────────
-# Funciones públicas
+# Spot (Binance)
 # ─────────────────────────────────────────────────────────────
 
 def get_precio(activo: str) -> float:
-    """
-    Precio actual del activo en USDT.
-
-    Args:
-        activo: 'BTC', 'ETH', 'SOL' (o símbolo completo tipo 'BTCUSDT')
-
-    Returns:
-        Precio en USDT como float.
-    """
     simbolo = _resolver_simbolo(activo)
-    data = _request("/api/v3/ticker/price", {"symbol": simbolo})
+    data = _request(BINANCE_BASE, "/api/v3/ticker/price", {"symbol": simbolo})
     return float(data["price"])
 
 
 def get_precios_todos() -> dict[str, float]:
-    """Precio actual de BTC, ETH y SOL en una sola llamada."""
     return {nombre: get_precio(nombre) for nombre in SIMBOLOS.keys()}
 
 
 def get_stats_24h(activo: str) -> Stats24h:
-    """
-    Stats de las últimas 24 horas: precio, cambio %, volumen, high, low.
-    Útil para detectar movimientos fuertes (Estrategia 3 - Arbitraje).
-    """
     simbolo = _resolver_simbolo(activo)
-    data = _request("/api/v3/ticker/24hr", {"symbol": simbolo})
+    data = _request(BINANCE_BASE, "/api/v3/ticker/24hr", {"symbol": simbolo})
     return Stats24h(
         simbolo=simbolo,
         precio_actual=float(data["lastPrice"]),
@@ -165,62 +134,24 @@ def get_stats_24h(activo: str) -> Stats24h:
     )
 
 
-def get_velas(
-    activo: str,
-    intervalo: Intervalo = "15m",
-    limite: int = 100,
-) -> list[Vela]:
-    """
-    Velas históricas (klines) para calcular indicadores técnicos.
-
-    Args:
-        activo: 'BTC', 'ETH', 'SOL'
-        intervalo: '1m', '5m', '15m', '1h', '4h', '1d', etc.
-        limite: cantidad de velas (máx 1000, default 100)
-
-    Returns:
-        Lista de Vela ordenada de más vieja a más nueva.
-
-    Para nuestras estrategias usamos:
-    - Mean Reversion / Bollinger: 15m, últimas 100 velas
-    - EMA 9/21 cross: 15m, últimas 50 velas
-    - Detección de movimientos fuertes: 5m, últimas 12 velas (1 hora)
-    """
+def get_velas(activo: str, intervalo: Intervalo = "15m", limite: int = 100) -> list[Vela]:
     simbolo = _resolver_simbolo(activo)
-    data = _request("/api/v3/klines", {
-        "symbol": simbolo,
-        "interval": intervalo,
-        "limit": min(limite, 1000),
+    data = _request(BINANCE_BASE, "/api/v3/klines", {
+        "symbol": simbolo, "interval": intervalo, "limit": min(limite, 1000),
     })
     return [
         Vela(
             timestamp=datetime.fromtimestamp(v[0] / 1000),
-            open=float(v[1]),
-            high=float(v[2]),
-            low=float(v[3]),
-            close=float(v[4]),
-            volume=float(v[5]),
+            open=float(v[1]), high=float(v[2]), low=float(v[3]),
+            close=float(v[4]), volume=float(v[5]),
         )
         for v in data
     ]
 
 
 def get_order_book(activo: str, profundidad: int = 20) -> OrderBook:
-    """
-    Snapshot del order book (bids y asks).
-
-    Args:
-        activo: 'BTC', 'ETH', 'SOL'
-        profundidad: niveles a traer (5, 10, 20, 50, 100, 500, 1000, 5000)
-
-    Returns:
-        OrderBook con bids/asks ordenados por mejor precio.
-
-    Uso futuro (Nivel 3): detectar paredes de liquidez institucional,
-    calcular spread real, identificar absorción de órdenes.
-    """
     simbolo = _resolver_simbolo(activo)
-    data = _request("/api/v3/depth", {"symbol": simbolo, "limit": profundidad})
+    data = _request(BINANCE_BASE, "/api/v3/depth", {"symbol": simbolo, "limit": profundidad})
     return OrderBook(
         simbolo=simbolo,
         bids=[(float(p), float(q)) for p, q in data["bids"]],
@@ -228,18 +159,51 @@ def get_order_book(activo: str, profundidad: int = 20) -> OrderBook:
     )
 
 
-def get_snapshot_completo(activo: str) -> dict:
-    """
-    Snapshot completo de un activo: precio + stats 24h + velas + order book.
-    Pensado para alimentar al agente IA en una sola llamada conceptual.
+# ─────────────────────────────────────────────────────────────
+# Derivados (OKX)
+# ─────────────────────────────────────────────────────────────
 
-    Returns:
-        dict con todo lo necesario para que analyst.py decida.
-    """
+def get_funding_rate(activo: str) -> float:
+    activo = activo.upper()
+    inst_id = OKX_SWAP.get(activo)
+    if not inst_id:
+        return 0.0
+    try:
+        data = _request(OKX_BASE, "/api/v5/public/funding-rate", {"instId": inst_id})
+        if data.get("code") == "0" and data.get("data"):
+            return float(data["data"][0].get("fundingRate", 0.0))
+        return 0.0
+    except (RuntimeError, KeyError, ValueError, IndexError):
+        return 0.0
+
+
+def get_long_short_ratio(activo: str, periodo: str = "5m") -> float:
+    activo = activo.upper()
+    ccy = OKX_CCY.get(activo)
+    if not ccy:
+        return 1.0
+    try:
+        data = _request(OKX_BASE, "/api/v5/rubik/stat/contracts/long-short-account-ratio", {
+            "ccy": ccy, "period": periodo,
+        })
+        if data.get("code") == "0" and data.get("data"):
+            return float(data["data"][0][1])
+        return 1.0
+    except (RuntimeError, KeyError, ValueError, IndexError):
+        return 1.0
+
+
+# ─────────────────────────────────────────────────────────────
+# Snapshot completo
+# ─────────────────────────────────────────────────────────────
+
+def get_snapshot_completo(activo: str) -> dict:
     stats = get_stats_24h(activo)
     velas_15m = get_velas(activo, "15m", 100)
     velas_5m = get_velas(activo, "5m", 60)
     order_book = get_order_book(activo, 20)
+    funding = get_funding_rate(activo)
+    ls_ratio = get_long_short_ratio(activo, "5m")
 
     return {
         "activo": activo,
@@ -259,54 +223,30 @@ def get_snapshot_completo(activo: str) -> dict:
             "bids_top10": order_book.bids[:10],
             "asks_top10": order_book.asks[:10],
         },
+        "funding_rate": funding,
+        "long_short_ratio": ls_ratio,
         "timestamp": datetime.now().isoformat(),
     }
 
 
-# ─────────────────────────────────────────────────────────────
-# Testing rápido — correr con: python -m bot.binance
-# ─────────────────────────────────────────────────────────────
 if __name__ == "__main__":
     print("=" * 60)
-    print("TEST: Binance API client")
+    print("TEST: Binance spot + OKX derivados")
     print("=" * 60)
 
-    # Test 1: precios actuales
-    print("\n📊 Precios actuales:")
+    print("\n📊 Precios (Binance):")
     for nombre, precio in get_precios_todos().items():
-        print(f"  {nombre}: ${precio:,.2f} USDT")
+        print(f"  {nombre}: ${precio:,.2f}")
 
-    # Test 2: stats 24h de BTC
-    print("\n📈 Stats 24h BTC:")
-    stats = get_stats_24h("BTC")
-    print(f"  Precio:     ${stats.precio_actual:,.2f}")
-    print(f"  Cambio 24h: {stats.cambio_pct_24h:+.2f}%")
-    print(f"  Volumen:    ${stats.volumen_quote_24h:,.0f} USDT")
-    print(f"  High 24h:   ${stats.high_24h:,.2f}")
-    print(f"  Low 24h:    ${stats.low_24h:,.2f}")
+    print("\n💸 Derivados (OKX):")
+    for activo in ["BTC", "ETH", "SOL"]:
+        f = get_funding_rate(activo)
+        ls = get_long_short_ratio(activo)
+        print(f"  {activo}: funding={f:+.6f} | L/S={ls:.3f}")
 
-    # Test 3: velas 15m
-    print("\n🕯️  Últimas 5 velas 15m de BTC:")
-    velas = get_velas("BTC", "15m", 5)
-    for v in velas:
-        print(f"  {v.timestamp.strftime('%H:%M')} | "
-              f"O: {v.open:,.0f} H: {v.high:,.0f} "
-              f"L: {v.low:,.0f} C: {v.close:,.0f} | "
-              f"Vol: {v.volume:.2f}")
-
-    # Test 4: order book
-    print("\n📖 Order book BTC (top 5):")
-    ob = get_order_book("BTC", 5)
-    print(f"  Mejor bid: ${ob.mejor_bid:,.2f}")
-    print(f"  Mejor ask: ${ob.mejor_ask:,.2f}")
-    print(f"  Spread:    {ob.spread_pct:.4f}%")
-
-    # Test 5: snapshot completo
-    print("\n📦 Snapshot completo de ETH:")
-    snap = get_snapshot_completo("ETH")
-    print(f"  Activo: {snap['activo']}")
+    print("\n📦 Snapshot BTC:")
+    snap = get_snapshot_completo("BTC")
     print(f"  Precio: ${snap['precio']:,.2f}")
-    print(f"  Velas 15m: {len(snap['velas_15m'])}")
-    print(f"  Velas 5m: {len(snap['velas_5m'])}")
-    print(f"  Spread: {snap['order_book']['spread_pct']:.4f}%")
-    print("\n✅ Todos los tests OK")
+    print(f"  Velas: 15m={len(snap['velas_15m'])} 5m={len(snap['velas_5m'])}")
+    print(f"  Funding: {snap['funding_rate']:+.6f}")
+    print(f"  L/S: {snap['long_short_ratio']:.3f}")
