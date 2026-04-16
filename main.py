@@ -1,8 +1,15 @@
 """
-main.py — Orquestador principal del bot de trading
-Corre en dos loops paralelos:
-  - Loop lento:  cada 30 minutos → análisis completo + señales
-  - Loop rápido: cada 30 segundos → monitoreo de posiciones abiertas
+main.py — Orquestador principal del bot de trading (v3)
+
+Alineado con analyst.py v3 (configuración validada por backtest):
+  - BTC: TREND_FOLLOWING
+  - ETH: TREND_FOLLOWING + ARBITRAJE
+  - SOL: fuera del universo
+  - TP/SL/horizonte por estrategia (vienen en la Senal)
+
+Dos loops:
+  - Loop lento:  cada 30 minutos → análisis + señales
+  - Loop rápido: cada 30 segundos → monitoreo de posiciones
 """
 
 import asyncio
@@ -26,23 +33,21 @@ logging.basicConfig(
 )
 logger = logging.getLogger("main")
 
-# Contador ciclos deportivos sin señal
 _ciclos_sin_senal_deportiva = 0
 
 
 # ─── Módulos del proyecto ────────────────────────────────────────────────────
-from agent.sessions import get_sesion_actual, puede_operar_ahora, get_multiplicador_capital
-from agent.analyst import analizar
+from agent.sessions import get_sesion_actual, puede_operar_ahora
+from agent.analyst import analizar, Direccion
 from agent.analyst_sports import analizar_todos_los_partidos
 from bot.hyperliquid import (
     get_precio_mark,
-    get_saldo_usdc,
     get_posiciones_onchain,
     ejecutar_apuesta,
     monitorear_posiciones,
     abrir_posicion_demo,
 )
-from bot.risk import verificar_stop_loss, obtener_estado_capital, evaluar_apuesta
+from bot.risk import verificar_stop_loss, obtener_estado_capital
 from database.models import (
     obtener_capital,
     crear_capital_inicial,
@@ -56,20 +61,22 @@ CAPITAL_DEMO   = float(os.getenv("CAPITAL_DEMO", 100))
 CAPITAL_REAL   = float(os.getenv("CAPITAL_REAL", 50))
 CAPITAL_ACTUAL = CAPITAL_DEMO if MODE == "demo" else CAPITAL_REAL
 
-PARES_CRIPTO      = ["BTC", "ETH", "SOL"]
-INTERVALO_LENTO   = 30 * 60   # 30 minutos
-INTERVALO_RAPIDO  = 30        # 30 segundos
+# v3: SOL descartado por backtest
+PARES_CRIPTO = ["BTC", "ETH"]
 
-TAKE_PROFIT_PCT = 0.015   # +1.5%
-STOP_LOSS_PCT   = 0.020   # -2.0%
-TAMANO_APUESTA  = 0.04    # 4% del capital por trade
-LEVERAGE        = 1
+INTERVALO_LENTO   = 30 * 60   # 30 min
+INTERVALO_RAPIDO  = 30        # 30 seg
+
+# Umbrales validados por backtest
+PROBABILIDAD_MIN_EJECUCION = 0.58
+
+TAMANO_APUESTA = 0.04    # 4% del capital por trade
+LEVERAGE       = 1
 
 
 # ─── Inicialización ──────────────────────────────────────────────────────────
 
 def inicializar_capital():
-    """Crea el registro de capital inicial si no existe."""
     for modo in ("demo", "real"):
         capital = obtener_capital(modo)
         if not capital:
@@ -80,24 +87,21 @@ def inicializar_capital():
             logger.info(f"Capital existente — modo={modo} saldo=${capital.get('saldo', '?')}")
 
 
-# ─── Loop lento: análisis cada 30 minutos ────────────────────────────────────
+# ─── Loop lento ──────────────────────────────────────────────────────────────
 
 async def ciclo_analisis():
     logger.info("═" * 60)
     logger.info(f"CICLO DE ANÁLISIS — {datetime.now().strftime('%H:%M:%S')} — modo={MODE.upper()}")
 
-    # 1. Verificar sesión horaria
     if not puede_operar_ahora():
         logger.info("⏸  Sesión con baja liquidez — análisis omitido")
         return
 
     sesion = get_sesion_actual()
-    # Sesion puede ser dataclass o dict — manejamos ambos casos
-    prioridad     = sesion.prioridad.value if hasattr(sesion, "prioridad") else sesion.get("prioridad", "EVITAR")
+    prioridad = sesion.prioridad.value if hasattr(sesion, "prioridad") else sesion.get("prioridad", "EVITAR")
     nombre_sesion = sesion.nombre if hasattr(sesion, "nombre") else sesion.get("nombre", "desconocida")
     logger.info(f"Sesión actual: {nombre_sesion} [{prioridad}]")
 
-    # 2. Verificar stop loss diario
     estado = obtener_estado_capital(MODE)
     if estado:
         bloqueado, razon = verificar_stop_loss(estado)
@@ -107,62 +111,65 @@ async def ciclo_analisis():
 
     capital = obtener_capital(MODE)
 
-    # 3. Análisis cripto
     if prioridad in ("ALTA", "MEDIA"):
         await _ciclo_cripto(prioridad, capital)
 
-    # 4. Análisis deportivo — solo sesión ALTA
     if prioridad == "ALTA":
         await _ciclo_deportivo()
 
 
 async def _ciclo_cripto(prioridad: str, capital):
-    """Analiza los pares cripto con analyst.analizar() y ejecuta/registra."""
+    """Analiza pares cripto con analyst v3 y ejecuta si hay señal validada."""
     logger.info("── Análisis CRIPTO ──────────────────────────────────")
 
     for par in PARES_CRIPTO:
         try:
             logger.info(f"Analizando {par}...")
-            senal = analizar(par)   # Devuelve Optional[Senal]
+            senal = analizar(par)
 
             if not senal:
                 logger.info(f"{par}: sin señal")
                 continue
 
-            accion  = senal.accion  if hasattr(senal, "accion")  else senal.get("accion", "ESPERAR")
-            score   = senal.score   if hasattr(senal, "score")   else senal.get("score", 0)
-            resumen = senal.resumen if hasattr(senal, "resumen") else senal.get("resumen", "")
-            precio  = get_precio_mark(par)
+            # analyst v3 devuelve objeto Senal con:
+            # direccion (SUBE/BAJA), probabilidad, confianza, razon, estrategia,
+            # regimen, tp_pct, sl_pct, horizonte_min
+            precio = get_precio_mark(par)
 
-            if accion == "ESPERAR":
-                logger.info(f"{par}: sin señal")
-                continue
+            logger.info(
+                f"{par}: {senal.direccion.value} | "
+                f"estrategia={senal.estrategia.value} | "
+                f"régimen={senal.regimen} | "
+                f"prob={senal.probabilidad:.2f} [{senal.confianza}] | "
+                f"precio={precio} | TP={senal.tp_pct}% SL={senal.sl_pct}%"
+            )
+            logger.info(f"  Razón: {senal.razon}")
 
-            logger.info(f"{par}: {accion} | score={score:.2f} | precio={precio}")
-
+            # Registrar señal en DB
             registrar_senal(
                 fuente=f"analyst_cripto_{par}",
-                contenido=resumen,
-                score=score,
-                accion=accion,
+                contenido=senal.razon,
+                score=senal.probabilidad,
+                accion=senal.direccion.value,
                 mercado_id=par,
             )
 
-            if prioridad == "ALTA" and score >= 0.65:
+            # Ejecutar solo si prob >= umbral Y sesión ALTA
+            if prioridad == "ALTA" and senal.probabilidad >= PROBABILIDAD_MIN_EJECUCION:
                 monto = _calcular_monto(capital)
                 if monto <= 0:
                     logger.warning(f"{par}: capital insuficiente")
                     continue
-                _ejecutar_trade(par, accion, monto, precio)
+                _ejecutar_trade(par, senal, monto, precio)
+            else:
+                logger.info(f"{par}: señal registrada sin ejecutar (prioridad={prioridad})")
 
         except Exception as e:
             logger.error(f"Error analizando {par}: {e}", exc_info=True)
 
 
 async def _ciclo_deportivo():
-    """Analiza mercados Azuro y registra señales (sin ejecución real en Nivel 1)."""
     global _ciclos_sin_senal_deportiva
-    # Saltear ciclo impar si no hubo señales (ahorro ~50% llamadas API)
     if _ciclos_sin_senal_deportiva > 0 and _ciclos_sin_senal_deportiva % 2 != 0:
         _ciclos_sin_senal_deportiva += 1
         logger.info(f"── Deportivo salteado (ciclos secos: {_ciclos_sin_senal_deportiva}) ──")
@@ -206,10 +213,9 @@ async def _ciclo_deportivo():
         logger.error(f"Error en análisis deportivo: {e}", exc_info=True)
 
 
-# ─── Loop rápido: monitoreo cada 30 segundos ─────────────────────────────────
+# ─── Loop rápido ─────────────────────────────────────────────────────────────
 
 async def ciclo_monitoreo():
-    """Verifica posiciones abiertas y aplica TP/SL."""
     try:
         posiciones = get_posiciones_onchain()
         if not posiciones:
@@ -247,11 +253,33 @@ def _calcular_monto(capital) -> float:
     return monto if monto >= 1.0 else 0.0
 
 
-def _ejecutar_trade(par: str, accion: str, monto: float, precio: float):
-    side   = "buy" if accion == "LONG" else "sell"
-    emoji  = "🟢" if side == "buy" else "🔴"
+def _ejecutar_trade(par: str, senal, monto: float, precio: float):
+    """
+    v3: usa TP/SL específicos de la señal (vienen de la estrategia):
+    - TREND_FOLLOWING: TP 2.0% / SL 1.0%
+    - ARBITRAJE:       TP 1.5% / SL 0.7%
+    """
+    es_long = senal.direccion == Direccion.SUBE
+    side = "buy" if es_long else "sell"
+    accion_log = "LONG" if es_long else "SHORT"
+    emoji = "🟢" if es_long else "🔴"
     prefijo = "[DEMO]" if MODE == "demo" else "[REAL]"
-    logger.info(f"{prefijo} {emoji} {accion} {par} | monto=${monto} | precio={precio}")
+
+    tp_pct = senal.tp_pct / 100   # convertir a decimal
+    sl_pct = senal.sl_pct / 100
+
+    if es_long:
+        take_profit = precio * (1 + tp_pct)
+        stop_loss   = precio * (1 - sl_pct)
+    else:
+        take_profit = precio * (1 - tp_pct)
+        stop_loss   = precio * (1 + sl_pct)
+
+    logger.info(
+        f"{prefijo} {emoji} {accion_log} {par} | ${monto} @ {precio} | "
+        f"TP={take_profit:.2f} ({senal.tp_pct}%) | SL={stop_loss:.2f} ({senal.sl_pct}%) | "
+        f"estrategia={senal.estrategia.value}"
+    )
 
     if MODE == "demo":
         resultado = abrir_posicion_demo(
@@ -259,12 +287,12 @@ def _ejecutar_trade(par: str, accion: str, monto: float, precio: float):
             side=side,
             monto_usdc=monto,
             precio_entrada=precio,
-            take_profit=precio * (1 + TAKE_PROFIT_PCT) if side == "buy" else precio * (1 - TAKE_PROFIT_PCT),
-            stop_loss=precio * (1 - STOP_LOSS_PCT)     if side == "buy" else precio * (1 + STOP_LOSS_PCT),
+            take_profit=take_profit,
+            stop_loss=stop_loss,
         )
         registrar_apuesta(
             mercado_id=par,
-            descripcion=f"{accion} {par} demo @ {precio}",
+            descripcion=f"{accion_log} {par} demo @ {precio} ({senal.estrategia.value})",
             monto=monto,
             odds=1.0,
             modo="demo",
@@ -282,7 +310,7 @@ def _ejecutar_trade(par: str, accion: str, monto: float, precio: float):
         logger.info(f"Order ejecutada: {resultado}")
         registrar_apuesta(
             mercado_id=par,
-            descripcion=f"{accion} {par} real @ {precio}",
+            descripcion=f"{accion_log} {par} real @ {precio} ({senal.estrategia.value})",
             monto=monto,
             odds=1.0,
             modo="real",
@@ -291,12 +319,13 @@ def _ejecutar_trade(par: str, accion: str, monto: float, precio: float):
         logger.error(f"Error ejecutando order {par}: {e}", exc_info=True)
 
 
-# ─── Runner principal ─────────────────────────────────────────────────────────
+# ─── Runner ─────────────────────────────────────────────────────────────────
 
 async def main():
     logger.info("╔══════════════════════════════════════════════════════╗")
-    logger.info("║        TRADING BOT — ARRANCANDO                     ║")
+    logger.info("║        TRADING BOT v3 — ARRANCANDO                  ║")
     logger.info(f"║  modo={MODE.upper():<6} capital=${CAPITAL_ACTUAL:<8}                   ║")
+    logger.info(f"║  pares cripto: {', '.join(PARES_CRIPTO):<38}║")
     logger.info("╚══════════════════════════════════════════════════════╝")
 
     inicializar_capital()
