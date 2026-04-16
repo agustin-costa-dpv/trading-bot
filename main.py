@@ -26,6 +26,10 @@ logging.basicConfig(
 )
 logger = logging.getLogger("main")
 
+# Contador ciclos deportivos sin señal
+_ciclos_sin_senal_deportiva = 0
+
+
 # ─── Módulos del proyecto ────────────────────────────────────────────────────
 from agent.sessions import get_sesion_actual, puede_operar_ahora, get_multiplicador_capital
 from agent.analyst import analizar
@@ -157,13 +161,22 @@ async def _ciclo_cripto(prioridad: str, capital):
 
 async def _ciclo_deportivo():
     """Analiza mercados Azuro y registra señales (sin ejecución real en Nivel 1)."""
+    global _ciclos_sin_senal_deportiva
+    # Saltear ciclo impar si no hubo señales (ahorro ~50% llamadas API)
+    if _ciclos_sin_senal_deportiva > 0 and _ciclos_sin_senal_deportiva % 2 != 0:
+        _ciclos_sin_senal_deportiva += 1
+        logger.info(f"── Deportivo salteado (ciclos secos: {_ciclos_sin_senal_deportiva}) ──")
+        return
     logger.info("── Análisis DEPORTIVO ──────────────────────────────")
     try:
         señales = analizar_todos_los_partidos()
 
         if not señales:
-            logger.info("Deportivo: sin señales con value suficiente")
+            _ciclos_sin_senal_deportiva += 1
+            logger.info(f"Deportivo: sin señales (ciclos secos: {_ciclos_sin_senal_deportiva})")
             return
+
+        _ciclos_sin_senal_deportiva = 0
 
         for s in señales:
             partido    = s.partido    if hasattr(s, "partido")    else s.get("partido", "")
