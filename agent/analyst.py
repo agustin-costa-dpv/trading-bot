@@ -213,16 +213,27 @@ def detectar_regimen(ind: Indicadores) -> Regimen:
 
 def estrategia_trend_following(ind: Indicadores) -> SenalEstrategia:
     dist_emas_pct = abs(ind.ema_9 - ind.ema_21) / ind.ema_21 * 100
+    volumen_ratio = ind.volumen_actual / ind.volumen_promedio if ind.volumen_promedio > 0 else 0
     volumen_ok = ind.volumen_actual >= ind.volumen_promedio * 0.9
 
-    if ind.ema_9 > ind.ema_21 > ind.ema_50 and dist_emas_pct > 0.05 and volumen_ok:
+    alineacion_alcista = ind.ema_9 > ind.ema_21 > ind.ema_50
+    alineacion_bajista = ind.ema_9 < ind.ema_21 < ind.ema_50
+
+    logger.info(
+        f"  TREND check: EMA9={ind.ema_9:.2f} EMA21={ind.ema_21:.2f} EMA50={ind.ema_50:.2f} | "
+        f"dist={dist_emas_pct:.3f}% (min 0.05) | "
+        f"vol_ratio={volumen_ratio:.2f} (min 0.90) | "
+        f"alcista={alineacion_alcista} | bajista={alineacion_bajista}"
+    )
+
+    if alineacion_alcista and dist_emas_pct > 0.05 and volumen_ok:
         fuerza = min(1.0, dist_emas_pct / 0.8 + ind.adx / 100)
         return SenalEstrategia(
             Estrategia.TREND_FOLLOWING, Direccion.SUBE, fuerza,
             f"EMAs alineadas alcistas + ADX {ind.adx:.1f}",
         )
 
-    if ind.ema_9 < ind.ema_21 < ind.ema_50 and dist_emas_pct > 0.05 and volumen_ok:
+    if alineacion_bajista and dist_emas_pct > 0.05 and volumen_ok:
         fuerza = min(1.0, dist_emas_pct / 0.8 + ind.adx / 100)
         return SenalEstrategia(
             Estrategia.TREND_FOLLOWING, Direccion.BAJA, fuerza,
