@@ -69,7 +69,7 @@ INTERVALO_LENTO   = 30 * 60   # 30 min
 INTERVALO_RAPIDO  = 30        # 30 seg
 
 # Umbrales validados por backtest
-PROBABILIDAD_MIN_EJECUCION = 0.58
+PROBABILIDAD_MIN_EJECUCION = float(os.getenv("PROBABILIDAD_MIN_EJECUCION", 0.58))
 
 TAMANO_APUESTA = 0.04    # 4% del capital por trade
 LEVERAGE       = 1
