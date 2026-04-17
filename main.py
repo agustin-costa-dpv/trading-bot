@@ -46,6 +46,7 @@ from bot.hyperliquid import (
     ejecutar_apuesta,
     monitorear_posiciones,
     abrir_posicion_demo,
+    LadoPosicion,
 )
 from bot.risk import verificar_stop_loss, obtener_estado_capital
 from database.models import (
@@ -282,13 +283,11 @@ def _ejecutar_trade(par: str, senal, monto: float, precio: float):
     )
 
     if MODE == "demo":
+        lado = LadoPosicion.LONG if es_long else LadoPosicion.SHORT
         resultado = abrir_posicion_demo(
             activo=par,
-            side=side,
-            monto_usdc=monto,
-            precio_entrada=precio,
-            take_profit=take_profit,
-            stop_loss=stop_loss,
+            lado=lado,
+            razon_senal=senal.razon,
         )
         registrar_apuesta(
             mercado_id=par,
@@ -301,11 +300,12 @@ def _ejecutar_trade(par: str, senal, monto: float, precio: float):
         return
 
     try:
+        lado = LadoPosicion.LONG if es_long else LadoPosicion.SHORT
         resultado = ejecutar_apuesta(
             activo=par,
-            side=side,
-            monto_usdc=monto,
-            leverage=LEVERAGE,
+            lado=lado,
+            razon_senal=senal.razon,
+            modo="real",
         )
         logger.info(f"Order ejecutada: {resultado}")
         registrar_apuesta(
