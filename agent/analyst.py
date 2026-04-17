@@ -17,6 +17,7 @@ Parámetros por estrategia (TP/SL/horizonte específicos):
 
 import os
 import json
+import logging
 import pandas as pd
 import pandas_ta as ta
 from dataclasses import dataclass, asdict
@@ -35,10 +36,12 @@ from agent.sessions import get_sesion_actual
 
 CLIENTE_CLAUDE = Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
 
+logger = logging.getLogger("agent.analyst")
+
 MODELO_HAIKU = "claude-haiku-4-5-20251001"
 MODELO_SONNET = "claude-sonnet-4-6"
 
-PROBABILIDAD_MINIMA_FINAL = 0.58
+PROBABILIDAD_MINIMA_FINAL = float(os.getenv("PROBABILIDAD_MIN_EJECUCION", 0.58))
 
 # Régimen (validado por backtest)
 ADX_TENDENCIA = 28
@@ -332,26 +335,34 @@ def analizar(activo: str) -> Optional[Senal]:
 
     sesion = get_sesion_actual()
     if not sesion.puede_operar:
+        logger.info(f"{activo}: sesión {sesion.nombre} no opera")
         return None
 
     snapshot = get_snapshot_completo(activo)
     ind = calcular_indicadores(snapshot)
 
     regimen = detectar_regimen(ind)
+    logger.info(
+        f"{activo}: ADX={ind.adx:.1f} | RSI={ind.rsi:.1f} | ATR%={ind.atr_pct:.2f} | "
+        f"cambio_5m={ind.cambio_pct_5min:+.2f}% | régimen={regimen.value}"
+    )
     if regimen in (Regimen.INDEFINIDO, Regimen.LATERAL):
+        logger.info(f"{activo}: descartado por régimen {regimen.value}")
         return None
 
     senal_est = evaluar_por_regimen_y_activo(regimen, ind, activo)
     if senal_est.estrategia == Estrategia.NINGUNA or senal_est.direccion == Direccion.NEUTRAL:
+        logger.info(f"{activo}: sin señal técnica — {senal_est.razon}")
         return None
 
     try:
         decision = validar_con_claude(activo, senal_est, ind, regimen, sesion.nombre)
     except (json.JSONDecodeError, KeyError, IndexError) as e:
-        print(f"⚠️  Error Claude en {activo}: {e}")
+        logger.warning(f"{activo}: error Claude — {e}")
         return None
 
     prob = decision.get("probabilidad", 0)
+    logger.info(f"{activo}: Claude prob={prob:.2f} (umbral={PROBABILIDAD_MINIMA_FINAL})")
     if prob < PROBABILIDAD_MINIMA_FINAL:
         return None
 
