@@ -309,7 +309,6 @@ def _ejecutar_trade(par: str, senal, monto: float, precio: float):
             razon_senal=senal.razon,
             modo="real",
         )
-        )
         logger.info(f"Order ejecutada: {resultado}")
         registrar_apuesta(
             mercado_id=par,
