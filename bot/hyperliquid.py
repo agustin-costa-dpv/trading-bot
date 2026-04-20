@@ -51,9 +51,9 @@ API_URL = (
 )
 
 # Parámetros de trading
-TAKE_PROFIT_PCT = 1.5   # Cerrar en ganancia cuando +1.5%
-STOP_LOSS_PCT = 2.0     # Cerrar en pérdida cuando -2%
-TAMANO_APUESTA_PCT = 0.04  # 4% del capital por apuesta (dentro del rango 3-5%)
+# TP/SL se reciben por parámetro desde analyst.py (no hardcodear acá)
+TAMANO_APUESTA_PCT = 0.25   # 25% del capital por apuesta
+TAMANO_MINIMO_USD = 12.0    # piso absoluto (Hyperliquid exige >=$10)
 
 
 # ─────────────────────────────────────────────────────────────
@@ -174,21 +174,24 @@ def get_exchange_client() -> Exchange:
 def abrir_posicion_demo(
     activo: str,
     lado: LadoPosicion,
+    tp_pct: float,
+    sl_pct: float,
     razon_senal: str = "",
 ) -> Posicion:
     """
     Simula apertura de posición. No toca blockchain.
     Usa precio mark actual de Hyperliquid como referencia realista.
+    tp_pct y sl_pct vienen del analyst (configuración validada por backtest).
     """
     precio = get_precio_mark(activo)
-    tamano = CAPITAL_DEMO * TAMANO_APUESTA_PCT
+    tamano = max(CAPITAL_DEMO * TAMANO_APUESTA_PCT, TAMANO_MINIMO_USD)
 
     if lado == LadoPosicion.LONG:
-        tp_precio = precio * (1 + TAKE_PROFIT_PCT / 100)
-        sl_precio = precio * (1 - STOP_LOSS_PCT / 100)
+        tp_precio = precio * (1 + tp_pct / 100)
+        sl_precio = precio * (1 - sl_pct / 100)
     else:  # SHORT
-        tp_precio = precio * (1 - TAKE_PROFIT_PCT / 100)
-        sl_precio = precio * (1 + STOP_LOSS_PCT / 100)
+        tp_precio = precio * (1 - tp_pct / 100)
+        sl_precio = precio * (1 + sl_pct / 100)
 
     return Posicion(
         activo=activo,
@@ -210,14 +213,17 @@ def abrir_posicion_demo(
 def abrir_posicion_real(
     activo: str,
     lado: LadoPosicion,
+    tp_pct: float,
+    sl_pct: float,
     razon_senal: str = "",
 ) -> Posicion:
     """
     Ejecuta orden MARKET real en Hyperliquid firmada con la API wallet.
+    tp_pct y sl_pct vienen del analyst (configuración validada por backtest).
     """
     exchange = get_exchange_client()
     precio = get_precio_mark(activo)
-    tamano_usd = CAPITAL_REAL * TAMANO_APUESTA_PCT
+    tamano_usd = max(CAPITAL_REAL * TAMANO_APUESTA_PCT, TAMANO_MINIMO_USD)
     size = tamano_usd / precio  # cantidad en unidades del activo
 
     # Redondeo mínimo según reglas de Hyperliquid
@@ -251,11 +257,11 @@ def abrir_posicion_real(
         orden_id = str(fill.get("oid", ""))
 
         if lado == LadoPosicion.LONG:
-            tp_precio = precio_real * (1 + TAKE_PROFIT_PCT / 100)
-            sl_precio = precio_real * (1 - STOP_LOSS_PCT / 100)
+            tp_precio = precio_real * (1 + tp_pct / 100)
+            sl_precio = precio_real * (1 - sl_pct / 100)
         else:
-            tp_precio = precio_real * (1 - TAKE_PROFIT_PCT / 100)
-            sl_precio = precio_real * (1 + STOP_LOSS_PCT / 100)
+            tp_precio = precio_real * (1 - tp_pct / 100)
+            sl_precio = precio_real * (1 + sl_pct / 100)
 
         return Posicion(
             activo=activo,
@@ -289,6 +295,8 @@ def abrir_posicion_real(
 def ejecutar_apuesta(
     activo: str,
     lado: LadoPosicion,
+    tp_pct: float,
+    sl_pct: float,
     razon_senal: str = "",
     modo: str = "dual",
 ) -> dict[str, Posicion]:
@@ -296,15 +304,16 @@ def ejecutar_apuesta(
     Ejecuta la misma señal en los modos configurados.
 
     Args:
+        tp_pct, sl_pct: del analyst (TREND=2.0/1.0, ARBITRAJE=1.5/0.7)
         modo: 'demo' | 'real' | 'dual'
     """
     resultado = {}
 
     if modo in ("demo", "dual"):
-        resultado["demo"] = abrir_posicion_demo(activo, lado, razon_senal)
+        resultado["demo"] = abrir_posicion_demo(activo, lado, tp_pct, sl_pct, razon_senal)
 
     if modo in ("real", "dual"):
-        resultado["real"] = abrir_posicion_real(activo, lado, razon_senal)
+        resultado["real"] = abrir_posicion_real(activo, lado, tp_pct, sl_pct, razon_senal)
 
     return resultado
 
