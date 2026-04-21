@@ -169,7 +169,16 @@ async def _ciclo_cripto(prioridad: str, capital):
             logger.error(f"Error analizando {par}: {e}", exc_info=True)
 
 
+# Análisis deportivo pausado hasta Azuro V3 (post mayo 2026)
+# Azuro V2 siendo deprecado; V3 puede cambiar estructura de mercados.
+# Reactivar cambiando a False cuando V3 esté live y probado.
+DEPORTIVO_PAUSADO = True
+
+
 async def _ciclo_deportivo():
+    if DEPORTIVO_PAUSADO:
+        return
+
     global _ciclos_sin_senal_deportiva
     if _ciclos_sin_senal_deportiva > 0 and _ciclos_sin_senal_deportiva % 2 != 0:
         _ciclos_sin_senal_deportiva += 1
