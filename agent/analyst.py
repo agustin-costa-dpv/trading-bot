@@ -169,8 +169,8 @@ def calcular_indicadores(snapshot: dict) -> Indicadores:
     precio_actual = snapshot["precio"]
     atr_pct = (atr / precio_actual) * 100
 
-    volumen_actual = float(df_15m["volume"].iloc[-1])
-    volumen_promedio = float(df_15m["volume"].tail(20).mean())
+    volumen_actual = float(df_15m["volume"].iloc[-2])
+    volumen_promedio = float(df_15m["volume"].iloc[-22:-2].mean())
 
     cambio_5min = 0.0
     if len(df_5m) >= 2:

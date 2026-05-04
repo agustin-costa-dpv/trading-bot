@@ -162,6 +162,10 @@ async def _ciclo_cripto(prioridad: str, capital):
 
             # Ejecutar solo si prob >= umbral Y sesión ALTA
             if prioridad == "ALTA" and senal.probabilidad >= PROBABILIDAD_MIN_EJECUCION:
+                # Gatekeeper: no abrir si ya hay posición en este activo
+                if _ya_hay_posicion_abierta(par):
+                    logger.info(f"{par}: posición ya abierta, no se duplica")
+                    continue
                 monto = _calcular_monto(capital)
                 if monto <= 0:
                     logger.warning(f"{par}: capital insuficiente")
@@ -174,7 +178,16 @@ async def _ciclo_cripto(prioridad: str, capital):
             logger.error(f"Error analizando {par}: {e}", exc_info=True)
 
 
+# Análisis deportivo pausado hasta Azuro V3 (post mayo 2026)
+# Azuro V2 siendo deprecado; V3 puede cambiar estructura de mercados.
+# Reactivar cambiando a False cuando V3 esté live y probado.
+DEPORTIVO_PAUSADO = True
+
+
 async def _ciclo_deportivo():
+    if DEPORTIVO_PAUSADO:
+        return
+
     global _ciclos_sin_senal_deportiva
     if _ciclos_sin_senal_deportiva > 0 and _ciclos_sin_senal_deportiva % 2 != 0:
         _ciclos_sin_senal_deportiva += 1
@@ -304,6 +317,25 @@ async def ciclo_monitoreo():
 
 # ─── Helpers ─────────────────────────────────────────────────────────────────
 
+def _ya_hay_posicion_abierta(activo: str) -> bool:
+    """
+    Chequea en Hyperliquid si ya hay una posición abierta en este activo.
+    Evita duplicar posiciones mientras hay una abierta.
+    Fail-safe: en caso de error, retorna True (no abre).
+    """
+    try:
+        posiciones = get_posiciones_onchain()
+        for p in posiciones:
+            coin = p.get("position", {}).get("coin", "")
+            szi = float(p.get("position", {}).get("szi", 0))
+            if coin.upper() == activo.upper() and abs(szi) > 0:
+                return True
+        return False
+    except Exception as e:
+        logger.warning(f"No se pudo chequear posiciones onchain: {e}")
+        return True
+      
+  
 def _calcular_monto(capital) -> float:
     if not capital:
         return 0.0
@@ -371,6 +403,8 @@ def _ejecutar_trade(par: str, senal, monto: float, precio: float):
         resultado = ejecutar_apuesta(
             activo=par,
             lado=lado,
+            tp_pct=senal.tp_pct,
+            sl_pct=senal.sl_pct,
             razon_senal=senal.razon,
             modo=MODE,
             tp_pct=senal.tp_pct,
