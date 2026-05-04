@@ -47,6 +47,8 @@ from bot.hyperliquid import (
     monitorear_posiciones,
     abrir_posicion_demo,
     LadoPosicion,
+    Posicion,
+    EstadoPosicion,
 )
 from bot.risk import verificar_stop_loss, obtener_estado_capital
 from database.models import (
@@ -54,6 +56,9 @@ from database.models import (
     crear_capital_inicial,
     registrar_apuesta,
     registrar_senal,
+    crear_posicion_activa,
+    listar_posiciones_abiertas,
+    cerrar_posicion_activa,
 )
 
 # ─── Config ──────────────────────────────────────────────────────────────────
@@ -217,31 +222,84 @@ async def _ciclo_deportivo():
 # ─── Loop rápido ─────────────────────────────────────────────────────────────
 
 async def ciclo_monitoreo():
+    """
+    Loop rápido: monitorea posiciones activas del bot persistidas en Supabase.
+    - Real: detecta cierres via trigger nativo de Hyperliquid
+    - Demo: cierra por código cuando precio cruza TP/SL
+    """
     try:
-        posiciones = get_posiciones_onchain()
+        rows = listar_posiciones_abiertas()
+        if not rows:
+            return
+
+        # Reconstruir objetos Posicion desde Supabase
+        posiciones = []
+        id_por_obj = {}
+        for r in rows:
+            try:
+                pos = Posicion(
+                    activo=r["activo"],
+                    lado=LadoPosicion(r["lado"]),
+                    tamano_usd=float(r["tamano_usd"]),
+                    precio_entrada=float(r["precio_entrada"]),
+                    precio_actual=float(r.get("precio_actual") or r["precio_entrada"]),
+                    tp_precio=float(r["tp_precio"]),
+                    sl_precio=float(r["sl_precio"]),
+                    estado=EstadoPosicion(r.get("estado", "ABIERTA")),
+                    plataforma=r["plataforma"],
+                    orden_id=r.get("orden_id"),
+                    tp_oid=r.get("tp_oid"),
+                    sl_oid=r.get("sl_oid"),
+                    razon_senal=r.get("razon_senal", ""),
+                )
+                pos.db_id = r["id"]
+                posiciones.append(pos)
+                id_por_obj[id(pos)] = r["id"]
+            except Exception as e:
+                logger.warning(f"No pude reconstruir posicion id={r.get('id')}: {e}")
+
         if not posiciones:
             return
 
-        logger.debug(f"Monitoreando {len(posiciones)} posición(es)")
-        posiciones_actualizadas = monitorear_posiciones(posiciones)
+        logger.debug(f"Monitoreando {len(posiciones)} posicion(es)")
+        actualizadas = monitorear_posiciones(posiciones)
 
-        for pos in posiciones_actualizadas:
-            estado_pos = pos.get("estado") if isinstance(pos, dict) else getattr(pos, "estado", None)
-            coin       = pos.get("coin")   if isinstance(pos, dict) else getattr(pos, "coin", "")
+        for pos in actualizadas:
+            db_id = id_por_obj.get(id(pos))
+            if db_id is None:
+                continue
 
-            if estado_pos in ("TP", "SL"):
-                emoji = "✅" if estado_pos == "TP" else "🛑"
-                logger.info(f"{emoji} {estado_pos} ejecutado — {coin}")
+            # Si cambio de estado, persistir cierre
+            if pos.estado != EstadoPosicion.ABIERTA:
+                motivo_map = {
+                    EstadoPosicion.CERRADA_GANANCIA: "TP",
+                    EstadoPosicion.CERRADA_PERDIDA: "SL",
+                    EstadoPosicion.CERRADA_MANUAL: "MANUAL",
+                    EstadoPosicion.ERROR: "ERROR",
+                }
+                motivo = motivo_map.get(pos.estado, "MANUAL")
+                cerrar_posicion_activa(
+                    posicion_id=db_id,
+                    precio_cierre=pos.precio_cierre or pos.precio_actual,
+                    motivo=motivo,
+                    pnl_usd=pos.pnl_usd,
+                    pnl_pct=pos.pnl_pct,
+                )
+                emoji = "✅" if motivo == "TP" else ("🛑" if motivo == "SL" else "⚪")
+                logger.info(
+                    f"{emoji} {motivo} {pos.plataforma} {pos.activo} {pos.lado.value} "
+                    f"PnL={pos.pnl_usd:+.2f} ({pos.pnl_pct:+.2f}%)"
+                )
                 registrar_senal(
-                    fuente=f"monitoreo_{estado_pos.lower()}",
-                    contenido=str(pos),
-                    score=1.0 if estado_pos == "TP" else 0.0,
-                    accion=f"CERRAR_{estado_pos}",
-                    mercado_id=coin,
+                    fuente=f"monitoreo_{motivo.lower()}",
+                    contenido=str(pos.to_dict()),
+                    score=1.0 if motivo == "TP" else 0.0,
+                    accion=f"CERRAR_{motivo}",
+                    mercado_id=pos.activo,
                 )
 
     except Exception as e:
-        logger.debug(f"Monitoreo: {e}")
+        logger.error(f"Error en ciclo_monitoreo: {e}", exc_info=True)
 
 
 # ─── Helpers ─────────────────────────────────────────────────────────────────
@@ -288,7 +346,16 @@ def _ejecutar_trade(par: str, senal, monto: float, precio: float):
             activo=par,
             lado=lado,
             razon_senal=senal.razon,
+            tp_pct=senal.tp_pct,
+            sl_pct=senal.sl_pct,
         )
+        # Persistir en posiciones_activas
+        try:
+            d = resultado.to_dict()
+            d["estrategia"] = senal.estrategia.value
+            crear_posicion_activa(d)
+        except Exception as e:
+            logger.warning(f"No pude persistir posicion demo: {e}")
         registrar_apuesta(
             mercado_id=par,
             descripcion=f"{accion_log} {par} demo @ {precio} ({senal.estrategia.value})",
@@ -305,15 +372,26 @@ def _ejecutar_trade(par: str, senal, monto: float, precio: float):
             activo=par,
             lado=lado,
             razon_senal=senal.razon,
-            modo="real",
+            modo=MODE,
+            tp_pct=senal.tp_pct,
+            sl_pct=senal.sl_pct,
         )
         logger.info(f"Order ejecutada: {resultado}")
+        # Persistir cada posicion abierta (demo y/o real)
+        for k, pos in resultado.items():
+            if pos.estado == EstadoPosicion.ABIERTA:
+                try:
+                    d = pos.to_dict()
+                    d["estrategia"] = senal.estrategia.value
+                    crear_posicion_activa(d)
+                except Exception as e:
+                    logger.warning(f"No pude persistir posicion {k}: {e}")
         registrar_apuesta(
             mercado_id=par,
-            descripcion=f"{accion_log} {par} real @ {precio} ({senal.estrategia.value})",
+            descripcion=f"{accion_log} {par} {MODE} @ {precio} ({senal.estrategia.value})",
             monto=monto,
             odds=1.0,
-            modo="real",
+            modo=MODE,
         )
     except Exception as e:
         logger.error(f"Error ejecutando order {par}: {e}", exc_info=True)
