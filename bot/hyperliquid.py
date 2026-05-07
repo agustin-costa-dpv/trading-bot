@@ -57,8 +57,7 @@ API_URL = (
 # Parametros de trading (defaults — pueden ser sobrescritos por la senal)
 TAKE_PROFIT_PCT = 1.5   # Cerrar en ganancia cuando +1.5%
 STOP_LOSS_PCT = 2.0     # Cerrar en perdida cuando -2%
-TAMANO_APUESTA_PCT = 0.25  # 25% del capital por apuesta (temp con CAPITAL_REAL=50, bajar a 0.04 cuando suba a $150+)
-
+TAMANO_APUESTA_PCT = 0.10  # 10% del capital por apuesta (CAPITAL_REAL=100, validación dual v3)
 
 # ─────────────────────────────────────────────────────────────
 # Modelos
