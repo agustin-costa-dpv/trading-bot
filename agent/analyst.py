@@ -221,19 +221,23 @@ def estrategia_trend_following(ind: Indicadores) -> SenalEstrategia:
 
     logger.info(
         f"  TREND check: EMA9={ind.ema_9:.2f} EMA21={ind.ema_21:.2f} EMA50={ind.ema_50:.2f} | "
-        f"dist={dist_emas_pct:.3f}% (min 0.05) | "
+        f"dist={dist_emas_pct:.3f}% (min 0.03) | "
         f"vol_ratio={volumen_ratio:.2f} (min 0.90) | "
         f"alcista={alineacion_alcista} | bajista={alineacion_bajista}"
     )
 
-    if alineacion_alcista and dist_emas_pct > 0.05 and volumen_ok:
+    if alineacion_alcista and dist_emas_pct > 0.03 and volumen_ok:
+        zona = "ZONA_RELAJADA" if dist_emas_pct <= 0.05 else "ZONA_ESTANDAR"
+        logger.info(f"  TREND señal alcista: {zona} (dist={dist_emas_pct:.3f}%)")
         fuerza = min(1.0, dist_emas_pct / 0.8 + ind.adx / 100)
         return SenalEstrategia(
             Estrategia.TREND_FOLLOWING, Direccion.SUBE, fuerza,
             f"EMAs alineadas alcistas + ADX {ind.adx:.1f}",
         )
 
-    if alineacion_bajista and dist_emas_pct > 0.05 and volumen_ok:
+    if alineacion_bajista and dist_emas_pct > 0.03 and volumen_ok:
+        zona = "ZONA_RELAJADA" if dist_emas_pct <= 0.05 else "ZONA_ESTANDAR"
+        logger.info(f"  TREND señal bajista: {zona} (dist={dist_emas_pct:.3f}%)")
         fuerza = min(1.0, dist_emas_pct / 0.8 + ind.adx / 100)
         return SenalEstrategia(
             Estrategia.TREND_FOLLOWING, Direccion.BAJA, fuerza,
