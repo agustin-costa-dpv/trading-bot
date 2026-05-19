@@ -57,7 +57,7 @@ API_URL = (
 # Parametros de trading (defaults — pueden ser sobrescritos por la senal)
 TAKE_PROFIT_PCT = 1.5   # Cerrar en ganancia cuando +1.5%
 STOP_LOSS_PCT = 2.0     # Cerrar en perdida cuando -2%
-TAMANO_APUESTA_PCT = 0.10  # 10% del capital por apuesta (CAPITAL_REAL=100, validación dual v3)
+TAMANO_APUESTA_PCT = 0.50  # 50% del capital — notional ~$50 con CAPITAL_REAL=100 (buffer 5x sobre mínimo $10 de Hyperliquid)
 
 # ─────────────────────────────────────────────────────────────
 # Modelos
