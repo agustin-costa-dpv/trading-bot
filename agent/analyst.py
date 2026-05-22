@@ -222,7 +222,7 @@ def estrategia_trend_following(ind: Indicadores) -> SenalEstrategia:
     logger.info(
         f"  TREND check: EMA9={ind.ema_9:.2f} EMA21={ind.ema_21:.2f} EMA50={ind.ema_50:.2f} | "
         f"dist={dist_emas_pct:.3f}% (min 0.03) | "
-        f"vol_ratio={volumen_ratio:.2f} (min 0.90) | "
+        f"vol_ratio={volumen_ratio:.2f} (min 0.60) | "
         f"alcista={alineacion_alcista} | bajista={alineacion_bajista}"
     )
 
