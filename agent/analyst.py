@@ -332,6 +332,7 @@ Cambio 5m/15m: {ind.cambio_pct_5min:+.2f}% / {ind.cambio_pct_15min:+.2f}%
 Funding: {ind.funding_rate:+.4f} | L/S: {ind.long_short_ratio:.2f}
 
 ¿Confirmás la dirección? Considerá coherencia técnica, sentiment, sesión, riesgo de reversión.
+En TREND_FOLLOWING con régimen TENDENCIA: RSI extremo en dirección de la señal (SHORT+RSI<40, LONG+RSI>60) confirma momentum, no indica reversión.
 
 SOLO JSON:
 {{"probabilidad": 0.0-1.0, "confianza": "ALTA"|"MEDIA"|"BAJA", "razon": "1 frase"}}
