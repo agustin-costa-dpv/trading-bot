@@ -18,6 +18,7 @@ CAMBIOS v3.2 (fixes criticos):
 
 import logging
 import os
+import time
 from dataclasses import dataclass, field
 from datetime import datetime
 from decimal import Decimal, ROUND_DOWN, getcontext
@@ -114,6 +115,15 @@ class Posicion:
 _info_client: Optional[Info] = None
 _exchange_client: Optional[Exchange] = None
 _szdecimals_cache: dict[str, int] = {}
+
+# Throttle global de la verificacion on-chain pesada (user_state).
+# El precio mark (all_mids) sigue refrescandose cada ciclo; la verificacion
+# de cierre real solo se consulta cada INTERVALO_ONCHAIN segundos para no
+# saturar el rate limit de Hyperliquid. El cierre real lo garantiza el
+# trigger nativo TP/SL on-chain; este throttle solo retrasa el REGISTRO
+# del cierre, no el cierre en si.
+INTERVALO_ONCHAIN = 120  # segundos
+_ultima_verificacion_onchain: float = 0.0
 
 
 def get_info_client() -> Info:
@@ -644,6 +654,14 @@ def monitorear_posiciones(posiciones: list[Posicion]) -> list[Posicion]:
     """
     actualizadas = []
 
+    # Decision unica por ciclo: ¿toca verificar on-chain (user_state)?
+    # Si no toca, las posiciones reales solo refrescan PnL y siguen ABIERTAS.
+    global _ultima_verificacion_onchain
+    ahora = time.time()
+    verificar_onchain = (ahora - _ultima_verificacion_onchain) >= INTERVALO_ONCHAIN
+    if verificar_onchain:
+        _ultima_verificacion_onchain = ahora
+
     for pos in posiciones:
         if pos.estado != EstadoPosicion.ABIERTA:
             actualizadas.append(pos)
@@ -654,8 +672,11 @@ def monitorear_posiciones(posiciones: list[Posicion]) -> list[Posicion]:
             pos.pnl_usd, pos.pnl_pct = calcular_pnl(pos)
 
             if pos.plataforma == "hyperliquid_real":
-                # Real: verificar si el exchange ya la cerro via trigger
-                if not _esta_abierta_onchain(pos.activo):
+                # Real: verificar si el exchange ya la cerro via trigger.
+                # Throttled: solo se consulta on-chain cada INTERVALO_ONCHAIN.
+                # Si no toca verificar, se deja ABIERTA con PnL refrescado;
+                # el cierre real lo garantiza el trigger nativo igual.
+                if verificar_onchain and not _esta_abierta_onchain(pos.activo):
                     # Determinar motivo en base a donde esta el precio respecto a TP/SL
                     if pos.lado == LadoPosicion.LONG:
                         toco_tp = pos.precio_actual >= pos.tp_precio * 0.999
