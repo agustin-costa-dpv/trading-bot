@@ -222,7 +222,7 @@ def estrategia_trend_following(ind: Indicadores) -> SenalEstrategia:
     logger.info(
         f"  TREND check: EMA9={ind.ema_9:.2f} EMA21={ind.ema_21:.2f} EMA50={ind.ema_50:.2f} | "
         f"dist={dist_emas_pct:.3f}% (min 0.03) | "
-        f"vol_ratio={volumen_ratio:.2f} (min 0.60) | "
+        f"vol_ratio={volumen_ratio:.2f} (min 0.90) | "
         f"alcista={alineacion_alcista} | bajista={alineacion_bajista}"
     )
 
@@ -254,14 +254,14 @@ def estrategia_arbitraje_latencia(ind: Indicadores) -> SenalEstrategia:
         fuerza = min(1.0, ind.cambio_pct_5min / (umbral * 2))
         return SenalEstrategia(
             Estrategia.ARBITRAJE_LATENCIA, Direccion.SUBE, fuerza,
-            f"+{ind.cambio_pct_5min:.2f}% en 5min (umbral {umbral:.2f}%) — Azuro lag",
+            f"+{ind.cambio_pct_5min:.2f}% en 5min (umbral {umbral:.2f}%) — lag latencia",
         )
 
     if ind.cambio_pct_5min <= -umbral:
         fuerza = min(1.0, abs(ind.cambio_pct_5min) / (umbral * 2))
         return SenalEstrategia(
             Estrategia.ARBITRAJE_LATENCIA, Direccion.BAJA, fuerza,
-            f"{ind.cambio_pct_5min:.2f}% en 5min (umbral {umbral:.2f}%) — Azuro lag",
+            f"{ind.cambio_pct_5min:.2f}% en 5min (umbral {umbral:.2f}%) — lag latencia",
         )
 
     return SenalEstrategia(Estrategia.ARBITRAJE_LATENCIA, Direccion.NEUTRAL, 0.0, f"Mov {ind.cambio_pct_5min:+.2f}%")
@@ -301,7 +301,7 @@ def evaluar_por_regimen_y_activo(regimen: Regimen, ind: Indicadores, activo: str
 
 def _llamar_claude(modelo: str, prompt: str, max_tokens: int = 400) -> dict:
     response = CLIENTE_CLAUDE.messages.create(
-        model=modelo, max_tokens=max_tokens,
+        model=modelo, max_tokens=max_tokens, temperature=0,
         messages=[{"role": "user", "content": prompt}],
     )
     texto = response.content[0].text.strip()
@@ -317,7 +317,7 @@ def validar_con_claude(activo: str, senal: SenalEstrategia, ind: Indicadores,
                        regimen: Regimen, sesion_nombre: str) -> dict:
     modelo = MODELO_SONNET if senal.fuerza > 0.8 else MODELO_HAIKU
 
-    prompt = f"""Trader cripto profesional. Validar operación en Azuro.
+    prompt = f"""Trader cripto profesional. Validar operación de perpetuales en Hyperliquid.
 
 ACTIVO: {activo} | SESIÓN: {sesion_nombre} | RÉGIMEN: {regimen.value}
 ESTRATEGIA: {senal.estrategia.value} → {senal.direccion.value} (fuerza {senal.fuerza:.2f})
