@@ -33,13 +33,10 @@ logging.basicConfig(
 )
 logger = logging.getLogger("main")
 
-_ciclos_sin_senal_deportiva = 0
-
 
 # ─── Módulos del proyecto ────────────────────────────────────────────────────
 from agent.sessions import get_sesion_actual, puede_operar_ahora
 from agent.analyst import analizar, Direccion
-from agent.analyst_sports import analizar_todos_los_partidos
 from bot.hyperliquid import (
     get_precio_mark,
     get_posiciones_onchain,
@@ -120,9 +117,6 @@ async def ciclo_analisis():
     if prioridad in ("ALTA", "MEDIA"):
         await _ciclo_cripto(prioridad, capital)
 
-    if prioridad == "ALTA":
-        await _ciclo_deportivo()
-
 
 async def _ciclo_cripto(prioridad: str, capital):
     """Analiza pares cripto con analyst v3 y ejecuta si hay señal validada."""
@@ -176,60 +170,6 @@ async def _ciclo_cripto(prioridad: str, capital):
 
         except Exception as e:
             logger.error(f"Error analizando {par}: {e}", exc_info=True)
-
-
-# Análisis deportivo pausado hasta Azuro V3 (post mayo 2026)
-# Azuro V2 siendo deprecado; V3 puede cambiar estructura de mercados.
-# Reactivar cambiando a False cuando V3 esté live y probado.
-DEPORTIVO_PAUSADO = True
-
-
-async def _ciclo_deportivo():
-    if DEPORTIVO_PAUSADO:
-        return
-
-    global _ciclos_sin_senal_deportiva
-    if _ciclos_sin_senal_deportiva > 0 and _ciclos_sin_senal_deportiva % 2 != 0:
-        _ciclos_sin_senal_deportiva += 1
-        logger.info(f"── Deportivo salteado (ciclos secos: {_ciclos_sin_senal_deportiva}) ──")
-        return
-    logger.info("── Análisis DEPORTIVO ──────────────────────────────")
-    try:
-        señales = analizar_todos_los_partidos()
-
-        if not señales:
-            _ciclos_sin_senal_deportiva += 1
-            logger.info(f"Deportivo: sin señales (ciclos secos: {_ciclos_sin_senal_deportiva})")
-            return
-
-        _ciclos_sin_senal_deportiva = 0
-
-        for s in señales:
-            partido    = s.partido    if hasattr(s, "partido")    else s.get("partido", "")
-            seleccion  = s.seleccion  if hasattr(s, "seleccion")  else s.get("seleccion", "")
-            odds       = s.odds       if hasattr(s, "odds")       else s.get("odds", 0)
-            value_pct  = s.value_pct  if hasattr(s, "value_pct")  else s.get("value_pct", 0)
-            mercado_id = s.mercado_id if hasattr(s, "mercado_id") else s.get("mercado_id", "")
-
-            logger.info(f"AZURO value: {partido} | {seleccion} @ {odds} | value={value_pct:.1f}%")
-
-            registrar_apuesta(
-                mercado_id=mercado_id,
-                descripcion=partido,
-                monto=0,
-                odds=odds,
-                modo=MODE,
-            )
-            registrar_senal(
-                fuente="analyst_sports_azuro",
-                contenido=str(s),
-                score=value_pct / 100,
-                accion=seleccion,
-                mercado_id=mercado_id,
-            )
-
-    except Exception as e:
-        logger.error(f"Error en análisis deportivo: {e}", exc_info=True)
 
 
 # ─── Loop rápido ─────────────────────────────────────────────────────────────
