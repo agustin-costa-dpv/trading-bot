@@ -43,8 +43,10 @@ MODELO_SONNET = "claude-sonnet-4-6"
 
 PROBABILIDAD_MINIMA_FINAL = float(os.getenv("PROBABILIDAD_MIN_EJECUCION", 0.58))
 
-# Régimen (validado por backtest)
-ADX_TENDENCIA = 28
+# Régimen — ADX 22 (antes 28): el nivel 28 confirmaba tendencia tarde y
+# descartaba ~90% de los ciclos como INDEFINIDO (ADX 19-27). Variante 22-25
+# contemplada en plan Fase 2.
+ADX_TENDENCIA = 22
 ADX_LATERAL = 18
 ARBITRAJE_ATR_MULT = 0.8
 
@@ -214,7 +216,7 @@ def detectar_regimen(ind: Indicadores) -> Regimen:
 def estrategia_trend_following(ind: Indicadores) -> SenalEstrategia:
     dist_emas_pct = abs(ind.ema_9 - ind.ema_21) / ind.ema_21 * 100
     volumen_ratio = ind.volumen_actual / ind.volumen_promedio if ind.volumen_promedio > 0 else 0
-    volumen_ok = ind.volumen_actual >= ind.volumen_promedio * 0.9
+    volumen_ok = ind.volumen_actual >= ind.volumen_promedio * 0.6
 
     alineacion_alcista = ind.ema_9 > ind.ema_21 > ind.ema_50
     alineacion_bajista = ind.ema_9 < ind.ema_21 < ind.ema_50
@@ -222,7 +224,7 @@ def estrategia_trend_following(ind: Indicadores) -> SenalEstrategia:
     logger.info(
         f"  TREND check: EMA9={ind.ema_9:.2f} EMA21={ind.ema_21:.2f} EMA50={ind.ema_50:.2f} | "
         f"dist={dist_emas_pct:.3f}% (min 0.03) | "
-        f"vol_ratio={volumen_ratio:.2f} (min 0.90) | "
+        f"vol_ratio={volumen_ratio:.2f} (min 0.60) | "
         f"alcista={alineacion_alcista} | bajista={alineacion_bajista}"
     )
 
